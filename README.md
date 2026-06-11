@@ -1,11 +1,5 @@
 # symbolic
 
-It can be built and run with [stack](https://docs.haskellstack.org/en/stable/README/):
-
-```
-stack build
-stack exec symbolic
-```
 
 Example Python input programs are stored in `examples/python/`.
 
