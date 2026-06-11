@@ -1,0 +1,28 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 0, "y": 0},
+      "input_values": [0, 0],
+      "expected_output": ["0"],
+      "path_condition": "1 and ~(5 < val_0) and 1",
+      "notes": "Derived from solved symbolic leaf at PC 38"
+    },
+    {
+      "id": 2,
+      "inputs": {"x": 6, "y": 0},
+      "input_values": [6, 0],
+      "expected_output": ["6"],
+      "path_condition": "1 and ~(5 < val_1) and 5 < val_0 and 1",
+      "notes": "Derived from solved symbolic leaf at PC 38"
+    },
+    {
+      "id": 3,
+      "inputs": {"x": 6, "y": 6},
+      "input_values": [6, 6],
+      "expected_output": ["12"],
+      "path_condition": "5 < val_1 and 5 < val_0 and 1",
+      "notes": "Derived from solved symbolic leaf at PC 38"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 3},
+      "input_values": [3],
+      "expected_output": ["0"],
+      "path_condition": "1 and ~(10 < val_0) and 1",
+      "notes": "Derived from solved symbolic leaf at PC 18"
+    },
+    {
+      "id": 2,
+      "inputs": {"x": 11},
+      "input_values": [11],
+      "expected_output": ["11"],
+      "path_condition": "10 < val_0 and 1",
+      "notes": "Derived from solved symbolic leaf at PC 18"
+    }
+  ]
+}

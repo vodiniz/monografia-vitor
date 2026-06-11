@@ -1,0 +1,27 @@
+=== Test Case 1 ===
+Inputs:
+  x = 0
+
+Expected output:
+  0
+
+
+Path condition:
+  1 and ~(~(0 = val_0)) and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 19
+
+=== Test Case 2 ===
+Inputs:
+  x = 4294967295
+
+Expected output:
+  4294967295
+
+
+Path condition:
+  ~(0 = val_0) and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 19

@@ -1,0 +1,29 @@
+=== Test Case 1 ===
+Inputs:
+  x = 0
+  y = 0
+
+Expected output:
+  0
+
+
+Path condition:
+  1 and ~(15 < (val_1 + val_0)) and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 28
+
+=== Test Case 2 ===
+Inputs:
+  x = 4294967280
+  y = 0
+
+Expected output:
+  4294967280
+
+
+Path condition:
+  15 < (val_1 + val_0) and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 28

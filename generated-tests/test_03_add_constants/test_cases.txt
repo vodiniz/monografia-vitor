@@ -1,0 +1,13 @@
+=== Test Case 1 ===
+Inputs:
+  x = 0
+
+Expected output:
+  15
+
+
+Path condition:
+  1
+
+Notes:
+  Derived from solved symbolic leaf at PC 18

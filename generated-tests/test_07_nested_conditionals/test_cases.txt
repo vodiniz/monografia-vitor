@@ -1,0 +1,44 @@
+=== Test Case 1 ===
+Inputs:
+  x = 0
+  y = 0
+
+Expected output:
+  0
+
+
+Path condition:
+  1 and ~(5 < val_0) and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 38
+
+=== Test Case 2 ===
+Inputs:
+  x = 6
+  y = 0
+
+Expected output:
+  6
+
+
+Path condition:
+  1 and ~(5 < val_1) and 5 < val_0 and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 38
+
+=== Test Case 3 ===
+Inputs:
+  x = 6
+  y = 6
+
+Expected output:
+  12
+
+
+Path condition:
+  5 < val_1 and 5 < val_0 and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 38

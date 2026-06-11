@@ -1,0 +1,28 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 0, "y": 0, "z": 0},
+      "input_values": [0, 0, 0],
+      "expected_output": ["0"],
+      "path_condition": "1 and 1 and ~((val_1 + val_0) < val_2) and ~(~(0 = val_2) and val_2 < (val_1 + val_0)) and 1",
+      "notes": "Derived from solved symbolic leaf at PC 52"
+    },
+    {
+      "id": 2,
+      "inputs": {"x": 262143, "y": 0, "z": 4293656576},
+      "input_values": [262143, 0, 4293656576],
+      "expected_output": ["4293656576"],
+      "path_condition": "1 and (val_1 + val_0) < val_2 and ~(~(0 = val_2) and val_2 < (val_1 + val_0)) and 1",
+      "notes": "Derived from solved symbolic leaf at PC 52"
+    },
+    {
+      "id": 3,
+      "inputs": {"x": 2, "y": 0, "z": 1},
+      "input_values": [2, 0, 1],
+      "expected_output": ["2"],
+      "path_condition": "~(0 = val_2) and val_2 < (val_1 + val_0) and 1",
+      "notes": "Derived from solved symbolic leaf at PC 52"
+    }
+  ]
+}

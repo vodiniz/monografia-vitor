@@ -1,0 +1,12 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 0, "y": 0},
+      "input_values": [0, 0],
+      "expected_output": ["0"],
+      "path_condition": "1",
+      "notes": "Derived from solved symbolic leaf at PC 16"
+    }
+  ]
+}

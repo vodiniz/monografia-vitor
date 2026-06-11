@@ -1,0 +1,20 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 4026531812, "y": 537066544},
+      "input_values": [4026531812, 537066544],
+      "expected_output": ["20"],
+      "path_condition": "1 and ~((val_1 + val_0) < 20) and 1",
+      "notes": "Derived from solved symbolic leaf at PC 28"
+    },
+    {
+      "id": 2,
+      "inputs": {"x": 2147483653, "y": 2147483659},
+      "input_values": [2147483653, 2147483659],
+      "expected_output": ["20"],
+      "path_condition": "(val_1 + val_0) < 20 and 1",
+      "notes": "Derived from solved symbolic leaf at PC 28"
+    }
+  ]
+}

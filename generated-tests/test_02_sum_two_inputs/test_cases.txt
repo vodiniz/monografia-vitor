@@ -1,0 +1,14 @@
+=== Test Case 1 ===
+Inputs:
+  x = 0
+  y = 0
+
+Expected output:
+  0
+
+
+Path condition:
+  1
+
+Notes:
+  Derived from solved symbolic leaf at PC 16

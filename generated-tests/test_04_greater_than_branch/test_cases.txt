@@ -1,0 +1,27 @@
+=== Test Case 1 ===
+Inputs:
+  x = 3
+
+Expected output:
+  0
+
+
+Path condition:
+  1 and ~(10 < val_0) and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 18
+
+=== Test Case 2 ===
+Inputs:
+  x = 11
+
+Expected output:
+  11
+
+
+Path condition:
+  10 < val_0 and 1
+
+Notes:
+  Derived from solved symbolic leaf at PC 18
