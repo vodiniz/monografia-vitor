@@ -1,0 +1,24 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 0, "y": 0},
+      "input_values": [0, 0],
+      "input_events": [{"index":0,"pc":0,"symbol":"val_0","name":"x","value":0},{"index":1,"pc":3,"symbol":"val_1","name":"y","value":0}],
+      "expected_branches": [{"pc":17,"taken":false},{"pc":22,"taken":true}],
+      "expected_output": ["0"],
+      "path_condition": "~(0 < val_1 and 0 < val_0) and 1",
+      "notes": "Validated completed path at PC 29"
+    },
+    {
+      "id": 2,
+      "inputs": {"x": 4294967295, "y": 4294967295},
+      "input_values": [4294967295, 4294967295],
+      "input_events": [{"index":0,"pc":0,"symbol":"val_0","name":"x","value":4294967295},{"index":1,"pc":3,"symbol":"val_1","name":"y","value":4294967295}],
+      "expected_branches": [{"pc":17,"taken":true}],
+      "expected_output": ["8589934590"],
+      "path_condition": "0 < val_1 and 0 < val_0 and 1",
+      "notes": "Validated completed path at PC 29"
+    }
+  ]
+}

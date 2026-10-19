@@ -5,6 +5,7 @@ import Prelude
 import qualified Data.Map.Strict as M
 import Data.Word (Word32)
 
+import PyNormalize (normalizeProgram)
 import PySyntax
 import Types
 
@@ -13,6 +14,8 @@ type Env = M.Map Name Word32
 data CompileState = CompileState
     { env :: Env
     , nextAddr :: Word32
+    , compiledLoops :: M.Map Int LoopInfo
+    , compiledReads :: M.Map Int Name
     }
     deriving (Eq, Show)
 
@@ -21,15 +24,23 @@ emptyCompileState =
     CompileState
         { env = M.empty
         , nextAddr = 0
+        , compiledLoops = M.empty
+        , compiledReads = M.empty
         }
 
 compileProgram :: PyProgram -> [Instr]
-compileProgram (PyProgram stmts) =
-    let (_, code) = compileStmtsAt emptyCompileState 0 stmts
-     in code ++ [Done]
+compileProgram = fst . compileProgramWithInfo
+
+-- Preserve the old entry point while offering source metadata to the bounded
+-- executor and exporter. Normalization is idempotent, so direct callers are safe.
+compileProgramWithInfo :: PyProgram -> ([Instr], ProgramInfo)
+compileProgramWithInfo ast =
+    let PyProgram stmts = normalizeProgram ast
+        (st, code) = compileStmtsAt emptyCompileState 0 stmts
+     in (code ++ [Done], ProgramInfo (compiledLoops st) (compiledReads st))
 
 -- =========================================================
--- Variáveis
+-- Variables
 -- =========================================================
 
 declareVar :: Name -> CompileState -> (CompileState, Word32)
@@ -52,7 +63,7 @@ lookupVar name st =
             error ("Variable not defined: " ++ name)
 
 -- =========================================================
--- Blocos de comandos
+-- Statement blocks
 -- =========================================================
 
 compileStmtsAt :: CompileState -> Int -> [PyStmt] -> (CompileState, [Instr])
@@ -65,13 +76,13 @@ compileStmtsAt st pc (stmt : stmts) =
      in (st2, code1 ++ code2)
 
 -- =========================================================
--- Comandos
+-- Statements
 -- =========================================================
 
 compileStmtAt :: CompileState -> Int -> PyStmt -> (CompileState, [Instr])
-compileStmtAt st _ (PyInput name) =
+compileStmtAt st pc (PyInput name) =
     let (st1, addr) = declareVar name st
-     in ( st1
+     in ( st1{compiledReads = M.insert pc name (compiledReads st1)}
         ,
             [ Read
             , Push addr
@@ -99,12 +110,12 @@ compileStmtAt st pc (PyIf cond thenStmts elseStmtsMaybe) =
                 Nothing -> []
                 Just ss -> ss
 
-        -- Código da condição.
-        -- Ao final, deixa o resultado booleano no topo da pilha.
+        -- Compile the condition.
+        -- The resulting boolean value remains at the top of the stack.
         (st1, condCode) =
             compileExpr st cond
 
-        -- Estrutura gerada:
+        -- Generated layout:
         --
         -- condCode
         -- Push thenAddr
@@ -116,9 +127,9 @@ compileStmtAt st pc (PyIf cond thenStmts elseStmtsMaybe) =
         -- JmpIf
         -- thenCode
         --
-        -- Se cond for verdadeira, pula para thenAddr.
-        -- Se cond for falsa, cai no elseCode.
-        -- Depois do elseCode, pula incondicionalmente para endAddr.
+        -- A true condition jumps to thenAddr.
+        -- A false condition falls through to elseCode.
+        -- After elseCode, jump unconditionally to endAddr.
 
         pcAfterCondJump =
             pc + length condCode + 3
@@ -155,9 +166,29 @@ compileStmtAt st pc (PyIf cond thenStmts elseStmtsMaybe) =
                 ++ thenCode
      in
         (st3, code)
+-- Compile a while without adding VM instructions. The guard exits when the
+-- original condition is false; the final constant-true jump revisits the header.
+-- Compile nested blocks at their final absolute PCs before deriving loopExit.
+compileStmtAt st pc (PyWhile cond body) =
+    let (st1, condCode) = compileExpr st cond
+        guardPc = pc + length condCode + 3
+        bodyPc = guardPc + 1
+        (st2, bodyCode) = compileStmtsAt st1 bodyPc body
+        backPc = bodyPc + length bodyCode + 2
+        endPc = backPc + 1
+        info = LoopInfo pc guardPc bodyPc backPc endPc
+        st3 = st2{compiledLoops = M.insert pc info (compiledLoops st2)}
+        code =
+            condCode
+                ++ [Push (fromIntegral endPc), Swap, Not, JmpIf]
+                ++ bodyCode
+                ++ [Push (fromIntegral pc), Push 1, JmpIf]
+     in (st3, code)
+compileStmtAt _ _ (PyForRange _ _ _ _) =
+    error "Range loops must be normalized before compilation."
 
 -- =========================================================
--- Expressões
+-- Expressions
 -- =========================================================
 
 compileExpr :: CompileState -> PyExp -> (CompileState, [Instr])

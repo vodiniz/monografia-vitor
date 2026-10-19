@@ -1,0 +1,41 @@
+=== Test Case 1 ===
+Inputs:
+  n = 2
+
+Expected output:
+  2
+
+
+Path condition:
+  ~(2 < val_0) and ~(~(1 < val_0)) and ~(~(0 < val_0)) and 1
+
+Notes:
+  Validated completed path at PC 27
+
+=== Test Case 2 ===
+Inputs:
+  n = 1
+
+Expected output:
+  1
+
+
+Path condition:
+  ~(1 < val_0) and ~(~(0 < val_0)) and 1
+
+Notes:
+  Validated completed path at PC 27
+
+=== Test Case 3 ===
+Inputs:
+  n = 0
+
+Expected output:
+  0
+
+
+Path condition:
+  ~(0 < val_0) and 1
+
+Notes:
+  Validated completed path at PC 27

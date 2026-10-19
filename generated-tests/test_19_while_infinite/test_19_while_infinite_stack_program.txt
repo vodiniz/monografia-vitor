@@ -1,0 +1,13 @@
+Generated stack-language program
+
+   0: Push 1
+   1: Push 10
+   2: Swap
+   3: Not
+   4: JmpIf
+   5: Push 1
+   6: Print
+   7: Push 0
+   8: Push 1
+   9: JmpIf
+  10: Done

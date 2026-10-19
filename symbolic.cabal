@@ -22,8 +22,11 @@ executable symbolic
   other-modules:
     ArtifactExport
     Concrete
+    ConcreteReplay
     Programs
     PyCompiler
+    PyEval
+    PyNormalize
     PyParser
     PySyntax
     SMT
@@ -33,7 +36,6 @@ executable symbolic
 
   default-language:   Haskell2010
   default-extensions:
-    NoImplicitPrelude
     ApplicativeDo
     BangPatterns
     ConstraintKinds
@@ -58,6 +60,7 @@ executable symbolic
     MultiParamTypeClasses
     MultiWayIf
     NamedFieldPuns
+    NoImplicitPrelude
     OverloadedStrings
     OverloadedStrings
     PatternSynonyms

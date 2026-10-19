@@ -1,0 +1,14 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 0},
+      "input_values": [0],
+      "input_events": [{"index":0,"pc":0,"symbol":"val_0","name":"x","value":0}],
+      "expected_branches": [],
+      "expected_output": ["0"],
+      "path_condition": "1",
+      "notes": "Validated completed path at PC 6"
+    }
+  ]
+}

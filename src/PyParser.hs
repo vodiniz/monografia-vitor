@@ -14,7 +14,6 @@ import Data.Word (Word32)
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
-import Text.Megaparsec.Pos (Pos, pos1)
 
 -- definition of a type for parsers
 
@@ -24,9 +23,9 @@ type Parser = Parsec Void String
 
 type ParserError = ParseErrorBundle String Void
 
--- Espaços horizontais.
--- Usado dentro de uma linha.
--- Importante: não consome quebra de linha.
+-- Horizontal whitespace.
+-- Used within a single line.
+-- Do not consume a newline here.
 slexer :: Parser ()
 slexer =
     L.space
@@ -34,8 +33,8 @@ slexer =
         (L.skipLineComment "#")
         empty
 
--- Espaços com quebra de linha.
--- Usado para controlar indentação.
+-- Whitespace that may include newlines.
+-- Used to determine block indentation.
 slexerNewline :: Parser ()
 slexerNewline =
     L.space
@@ -61,7 +60,12 @@ lexeme = L.lexeme slexer
 -- parsing a number
 
 integer :: Parser Word32
-integer = lexeme L.decimal
+integer = lexeme $ do
+    -- Reject oversized literals instead of silently wrapping them to Word32.
+    value <- L.decimal :: Parser Integer
+    if value <= toInteger (maxBound :: Word32)
+        then return (fromInteger value)
+        else fail "Integer literal exceeds the supported unsigned 32-bit range"
 
 -- parsing keywords
 
@@ -80,10 +84,14 @@ reservedWords =
     , "and"
     , "or"
     , "not"
+    , "while"
+    , "for"
+    , "in"
+    , "range"
     ]
 
 {- | Parse an identifier.
-Variáveis seguem estilo Python: x, y, soma, valor1, etc.
+Identifiers follow Python-style naming rules: x, y, total, value1, etc.
 -}
 pName :: Parser Name
 pName = lexeme $ do
@@ -119,13 +127,13 @@ prefix name f = Prefix (f <$ pKeyword name)
 
 optable :: [[Operator Parser PyExp]]
 optable =
-    [ [prefix "not" PyNot]
-    , [binary "+" PyAdd]
+    [ [binary "+" PyAdd]
     ,
         [ binaryNonAssoc "==" PyEq
         , binaryNonAssoc "<" PyLt
         , binaryNonAssoc ">" PyGt
         ]
+    , [prefix "not" PyNot]
     , [binary "and" PyAnd]
     , [binary "or" PyOr]
     ]
@@ -134,7 +142,9 @@ optable =
 
 pStatement :: Pos -> Parser PyStmt
 pStatement indent =
-    try (pIf indent)
+    try (pWhile indent)
+        <|> try (pForRange indent)
+        <|> try (pIf indent)
         <|> try pInput
         <|> try pPrint
         <|> pAssign
@@ -191,7 +201,32 @@ pIf currentIndent = do
 
     return (PyIf cond thenBlock elseBlock)
 
--- Parseia um bloco indentado depois de ':'
+-- Parse the condition once syntactically; its value is evaluated on every visit.
+-- Reusing the existing block parser preserves the same indentation rules as if.
+pWhile :: Pos -> Parser PyStmt
+pWhile currentIndent = do
+    _ <- pKeyword "while"
+    cond <- pExp
+    _ <- symbol ":"
+    PyWhile cond <$> pIndentedBlock currentIndent
+
+-- The first implementation deliberately accepts only range(start, stop).
+-- A third argument and general iterables are rejected rather than approximated.
+pForRange :: Pos -> Parser PyStmt
+pForRange currentIndent = do
+    _ <- pKeyword "for"
+    name <- pName
+    _ <- pKeyword "in"
+    _ <- pKeyword "range"
+    _ <- symbol "("
+    start <- pExp
+    _ <- symbol "," <?> "range(start, stop) with exactly two arguments"
+    stop <- pExp
+    _ <- symbol ")" <?> "range(start, stop); custom steps are not supported"
+    _ <- symbol ":"
+    PyForRange name start stop <$> pIndentedBlock currentIndent
+
+-- Parse an indented block following ':'.
 
 pIndentedBlock :: Pos -> Parser [PyStmt]
 pIndentedBlock parentIndent = do
@@ -207,7 +242,7 @@ pIndentedBlock parentIndent = do
 
     return (firstStmt : restStmts)
 
--- Parseia um statement exatamente em uma coluna esperada
+-- Parse a statement at exactly the expected column.
 
 pStatementAt :: Pos -> Parser PyStmt
 pStatementAt indent = do
@@ -215,7 +250,7 @@ pStatementAt indent = do
     pStatement indent
 
 -- Top-level parser.
--- Todo comando global deve começar na coluna 1.
+-- Every top-level statement must start in column 1.
 
 pPyProgram :: Parser PyProgram
 pPyProgram = do

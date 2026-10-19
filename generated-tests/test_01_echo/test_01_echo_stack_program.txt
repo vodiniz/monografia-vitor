@@ -1,0 +1,9 @@
+Generated stack-language program
+
+   0: Read
+   1: Push 0
+   2: Store
+   3: Push 0
+   4: Load
+   5: Print
+   6: Done

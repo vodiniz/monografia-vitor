@@ -1,0 +1,12 @@
+=== Test Case 1 ===
+Inputs:
+  <none>
+Expected output:
+  9
+
+
+Path condition:
+  1
+
+Notes:
+  Validated completed path at PC 41

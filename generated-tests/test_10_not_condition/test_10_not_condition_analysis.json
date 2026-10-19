@@ -1,0 +1,8 @@
+{
+  "loop_k": 2,
+  "max_depth": 1000,
+  "states": 21,
+  "solver_queries": 2,
+  "terminal_paths": [{"pc":19,"status":"Completed","solver":"sat"},{"pc":19,"status":"Completed","solver":"sat"}],
+  "validation_rejections": []
+}

@@ -1,0 +1,44 @@
+=== Test Case 1 ===
+Inputs:
+  x = 4294967295
+  y = 0
+
+Expected output:
+  0
+
+
+Path condition:
+  ~(val_1 = val_0) and ~(val_0 < val_1) and 1
+
+Notes:
+  Validated completed path at PC 36
+
+=== Test Case 2 ===
+Inputs:
+  x = 0
+  y = 0
+
+Expected output:
+  0
+
+
+Path condition:
+  val_1 = val_0 and ~(val_0 < val_1) and 1
+
+Notes:
+  Validated completed path at PC 36
+
+=== Test Case 3 ===
+Inputs:
+  x = 0
+  y = 1
+
+Expected output:
+  0
+
+
+Path condition:
+  val_0 < val_1 and 1
+
+Notes:
+  Validated completed path at PC 36

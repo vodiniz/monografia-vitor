@@ -3,8 +3,6 @@ module SMT where
 import Foundation
 import Foundation.Collection
 
-import Control.Monad.Reader (ask)
-import Control.Monad.Trans (liftIO)
 import qualified Data.Map.Strict as M
 import qualified Data.SBV.Dynamic as S
 import qualified Data.Set as S
@@ -100,18 +98,21 @@ renderSMTResult s@(S.Satisfiable _ _) =
 renderSMTResult _ = "Error"
 
 renderSolvedState :: SolvedState -> String
-renderSolvedState (SolvedState (pc, _, _, st, cs) c) =
-    "PC: "
-        <> show pc
-        <> "\n"
-        <> "Stack: "
-        <> show (renderSym <$> st)
-        <> "\n"
-        <> "Path Constraints: "
-        <> show (renderSym (foldr SAnd (SCon 1) cs))
-        <> "\n"
-        <> "Solved Values: "
-        <> renderSMTResult c
+renderSolvedState (SolvedState node result) =
+    let (pc, _, _, st, cs, _) = traceState node
+     in "PC: "
+            <> show pc
+            <> "\n"
+            <> "Stack: "
+            <> show (renderSym <$> st)
+            <> "\n"
+            <> "Path Constraints: "
+            <> show (renderSym (foldr SAnd (SCon 1) cs))
+            <> "\n"
+            <> "Solved Values: "
+            <> maybe "Not queried" renderSMTResult result
+            <> "\nStatus: "
+            <> show (stopReason node)
 
 renderDict :: (Show v) => M.Map String v -> String
 renderDict m =
@@ -119,14 +120,21 @@ renderDict m =
   where
     toStr (k, v) s = k <> " = " <> show v <> ", " <> s
 
-data SolvedState = SolvedState SymState S.SMTResult
+-- Internal nodes are retained for display, but only terminal paths need a
+-- model. This avoids querying Z3 once for every instruction in every loop.
+data SolvedState = SolvedState TraceNode (Maybe S.SMTResult)
 
 solveSym :: Trace -> IO (T.Tree SolvedState)
-solveSym (T.Node state@(_, _, _, _, cs) c) = do
-    let smtExpr = toSMT cs
-    S.SatResult smtRes <- S.satWith S.z3 smtExpr
-    children <- traverse solveSym c
-    return $ T.Node (SolvedState state smtRes) children
+solveSym (T.Node node children) = do
+    result <-
+        if null children
+            then do
+                let (_, _, _, _, cs, _) = traceState node
+                S.SatResult smtResult <- S.satWith S.z3 (toSMT cs)
+                return (Just smtResult)
+            else return Nothing
+    solvedChildren <- traverse solveSym children
+    return $ T.Node (SolvedState node result) solvedChildren
 
 conjoin :: [S.SVal] -> S.SVal
 conjoin = foldr (S.svAnd . sValToSBool) S.svTrue

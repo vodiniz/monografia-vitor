@@ -14,6 +14,10 @@ data PyStmt
     | PyPrint PyExp
     | PyAssign Name PyExp
     | PyIf PyExp [PyStmt] (Maybe [PyStmt])
+    | -- Store the condition and the statements executed by a while loop.
+      PyWhile PyExp [PyStmt]
+    | -- Store the target variable, range bounds, and loop body.
+      PyForRange Name PyExp PyExp [PyStmt]
     deriving (Eq, Ord, Show)
 
 data PyExp

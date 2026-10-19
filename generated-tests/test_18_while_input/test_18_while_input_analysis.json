@@ -1,0 +1,8 @@
+{
+  "loop_k": 2,
+  "max_depth": 1000,
+  "states": 64,
+  "solver_queries": 4,
+  "terminal_paths": [{"pc":15,"status":"CutByLoop 6","solver":"sat"},{"pc":27,"status":"Completed","solver":"sat"},{"pc":27,"status":"Completed","solver":"sat"},{"pc":27,"status":"Completed","solver":"sat"}],
+  "validation_rejections": []
+}

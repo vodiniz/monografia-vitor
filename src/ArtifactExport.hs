@@ -1,9 +1,8 @@
-module ArtifactExport
-    ( exportArtifacts
-    ) where
+module ArtifactExport where
 
 import Prelude
 
+import ConcreteReplay
 import qualified Data.Char as Char
 import qualified Data.List as List
 import qualified Data.Map.Strict as M
@@ -11,54 +10,77 @@ import qualified Data.SBV.Dynamic as S
 import qualified Data.Tree as T
 import Data.Word (Word32)
 import qualified Foundation as F
+import PyEval (evalPyProgramWithBudget)
 import System.Directory (createDirectoryIfMissing)
-import System.FilePath
-    ( dropExtension
-    , takeBaseName
-    , takeFileName
-    , (</>)
-    )
+import System.FilePath (
+    dropExtension,
+    takeBaseName,
+    takeFileName,
+    (</>),
+ )
 import Text.Read (readMaybe)
 
+import PyCompiler (compileProgramWithInfo)
 import PySyntax
 import SMT
 import Symbolic
 import Types
-import Util
 
 data ExportTestCase = ExportTestCase
     { testId :: Int
     , inputAssignments :: [(String, Word32)]
-    -- Expected output is stored as strings because the replay script compares
-    -- printed Python lines, not internal Word32 stack values.
+    , inputOccurrences :: [(ReadEvent, String, Word32)]
     , expectedOutput :: [String]
+    , expectedBranches :: [BranchEvent]
     , pathConditionText :: String
     , notes :: String
     }
     deriving (Eq, Show)
 
-exportArtifacts ::
-    FilePath ->
-    String ->
-    PyProgram ->
-    [Instr] ->
-    T.Tree SolvedState ->
-    IO FilePath
-exportArtifacts inputPath source ast instrs solvedTraces = do
+-- Retain the original entry point; callers that choose limits should use the
+-- explicit version so the JSON and README record the actual configuration.
+exportArtifacts :: FilePath -> String -> PyProgram -> [Instr] -> T.Tree SolvedState -> IO FilePath
+exportArtifacts inputPath source ast instrs solved =
+    exportArtifactsWith defaultAnalysisConfig (snd (compileProgramWithInfo ast)) inputPath source ast instrs solved
+
+exportArtifactsWith :: AnalysisConfig -> ProgramInfo -> FilePath -> String -> PyProgram -> [Instr] -> T.Tree SolvedState -> IO FilePath
+exportArtifactsWith config info inputPath source ast instrs solvedTraces = do
     let programName = programFolderName inputPath
         outputDir = "generated-tests" </> programName
-        inputNames = collectInputs ast
-        testCases = buildTestCases ast inputNames solvedTraces
-
-    -- Keep every artifact for one analyzed program in a deterministic folder so
-    -- repeated runs are easy to inspect and compare.
+        (testCases, rejected) = buildTestCases config info ast instrs solvedTraces
+        -- Keep the existing filename convention to preserve downstream scripts.
+        prefix = programName ++ "_"
+        origFile = prefix ++ "original.py"
+        stackFile = prefix ++ "stack_program.txt"
+        txtFile = prefix ++ "test_cases.txt"
+        jsonFile = prefix ++ "test_cases.json"
+        runnerFile = prefix ++ "run_tests.py"
+        readmeFile = prefix ++ "README.md"
+        analysisFile = prefix ++ "analysis.json"
     createDirectoryIfMissing True outputDir
-    writeFile (outputDir </> "original.py") source
-    writeFile (outputDir </> "stack_program.txt") (renderStackProgram instrs)
-    writeFile (outputDir </> "test_cases.txt") (renderTestCases testCases)
-    writeFile (outputDir </> "test_cases.json") (renderTestCasesJson testCases)
-    writeFile (outputDir </> "run_tests.py") replayScript
-    writeFile (outputDir </> "README.md") (renderReadme inputPath programName)
+    writeFile (outputDir </> origFile) source
+    writeFile (outputDir </> stackFile) (renderStackProgram instrs)
+    writeFile (outputDir </> txtFile) (renderTestCases testCases)
+    writeFile (outputDir </> jsonFile) (renderTestCasesJson testCases)
+    writeFile (outputDir </> runnerFile) (replayScript origFile jsonFile)
+    writeFile (outputDir </> analysisFile) (renderAnalysisJson config solvedTraces rejected)
+    writeFile
+        (outputDir </> readmeFile)
+        ( renderReadme inputPath programName origFile stackFile txtFile jsonFile runnerFile readmeFile
+            ++ "\n## Bounded exploration\n\n"
+            ++ "loop-k: "
+            ++ show (loopK config)
+            ++ "; max-depth: "
+            ++ show (maxDepth config)
+            ++ ".\n"
+            ++ "Only completed SAT paths with a successful concrete validation become tests.\n"
+            ++ "See `"
+            ++ analysisFile
+            ++ "` for cuts, solver outcomes, and rejected models.\n"
+            ++ "Word32 solver arithmetic is retained; this is not full Python integer semantics.\n"
+            ++ "Models are validated against concrete compiled branches before export; replay checks source output and input consumption with a timeout.\n"
+        )
+    putStrLn ("Validated tests: " ++ show (length testCases) ++ "; rejected models: " ++ show (length rejected))
     return outputDir
 
 programFolderName :: FilePath -> String
@@ -79,154 +101,119 @@ sanitizeName =
         | c == '_' = c
         | otherwise = '_'
 
+-- Static collection remains useful as an inventory, but it no longer defines
+-- input order: only the Read events on a particular path can provide that order.
 collectInputs :: PyProgram -> [String]
-collectInputs (PyProgram stmts) =
-    concatMap collectStmtInputs stmts
+collectInputs (PyProgram stmts) = concatMap collectStmtInputs stmts
 
--- Input variables are collected from the AST so exported assignments use source
--- names like x and y instead of only solver names like val_0 and val_1.
 collectStmtInputs :: PyStmt -> [String]
 collectStmtInputs (PyInput name) = [name]
 collectStmtInputs (PyPrint _) = []
 collectStmtInputs (PyAssign _ _) = []
-collectStmtInputs (PyIf _ thenStmts elseStmts) =
-    concatMap collectStmtInputs thenStmts
-        ++ maybe [] (concatMap collectStmtInputs) elseStmts
+collectStmtInputs (PyIf _ yes no) = concatMap collectStmtInputs (yes ++ maybe [] id no)
+collectStmtInputs (PyWhile _ body) = concatMap collectStmtInputs body
+collectStmtInputs (PyForRange _ _ _ body) = concatMap collectStmtInputs body
 
-buildTestCases :: PyProgram -> [String] -> T.Tree SolvedState -> [ExportTestCase]
-buildTestCases ast inputNames solvedTraces =
-    zipWith mkTestCase [1 ..] satisfiableLeaves
+buildTestCases :: AnalysisConfig -> ProgramInfo -> PyProgram -> [Instr] -> T.Tree SolvedState -> ([ExportTestCase], [String])
+buildTestCases config info ast instrs solvedTraces =
+    let candidates = filter isSatisfiableSolvedState (leaves solvedTraces)
+        attempts = map mkTestCase candidates
+        accepted = [value | Right value <- attempts]
+        rejected = [err | Left err <- attempts]
+     in (zipWith (\n value -> value{testId = n}) [1 ..] accepted, rejected)
   where
-    -- Each satisfiable symbolic leaf represents one feasible execution path.
-    -- Unsatisfiable leaves are solver artifacts and should not become tests.
-    satisfiableLeaves =
-        filter isSatisfiableSolvedState (leaves solvedTraces)
-
-    mkTestCase n solved@(SolvedState state@(_, inputCount, _, _, cs) smtResult) =
-        let model = modelAssignments smtResult
-            inputValues = concreteInputs inputNames inputCount model
-            -- Expected output must match original.py. We evaluate the parsed
-            -- Python-like AST instead of replaying the stack program because the
-            -- compiler uses Word32 stack values internally, while Python prints
-            -- unbounded integers from input().
-            expected =
-                either
-                    (\err -> ["<error: " ++ err ++ ">"])
-                    id
-                    (evalPyProgram ast (map snd inputValues))
-         in ExportTestCase
-                { testId = n
-                , inputAssignments = inputValues
-                , expectedOutput = expected
-                , pathConditionText = F.toList (renderSym (foldr SAnd (SCon 1) cs))
-                , notes = "Derived from solved symbolic leaf at PC " ++ showPc state solved
-                }
-
-showPc :: SymState -> SolvedState -> String
-showPc (pc, _, _, _, _) _ = show pc
+    -- An SMT model is necessary but insufficient: replay the compiled path with
+    -- unbounded arithmetic and compare it to the expected symbolic decisions.
+    -- This rejects models that exploit the existing Word32/Python mismatch.
+    mkTestCase (SolvedState node (Just smtResult)) = do
+        let (pc, _, _, _, cs, ctx) = traceState node
+            model = modelAssignments smtResult
+            events = reverse (readEvents ctx)
+            sourceName event = M.findWithDefault ("val_" ++ show (readIndex event)) (readPc event) (programReads info)
+            occurrences = [(event, sourceName event, M.findWithDefault 0 ("val_" ++ show (readIndex event)) model) | event <- events]
+            values = [value | (_, _, value) <- occurrences]
+            names = [name | (_, name, _) <- occurrences]
+            label event name = if length (filter (== name) names) > 1 then name ++ "#" ++ show (readIndex event) else name
+            assignments = [(label event name, value) | (event, name, value) <- occurrences]
+            branches = reverse (branchEvents ctx)
+            budget = max 1000 (maxDepth config * 2 + 10)
+            -- Add the current program counter to validation errors while preserving
+            -- the successful result type. The explicit polymorphic signature allows
+            -- this helper to handle both source outputs and concrete replay results.
+            annotate :: Either String a -> Either String a
+            annotate (Left err) =
+                Left ("PC " ++ show pc ++ ": " ++ err)
+            annotate (Right value) =
+                Right value
+        expected <- annotate (evalPyProgramWithBudget budget ast values)
+        concrete <- annotate (replayConcrete budget instrs values)
+        if replayBranches concrete /= branches
+            then Left ("PC " ++ show pc ++ ": concrete branch trace differs from the symbolic path (possible Word32 overflow).")
+            else
+                if replayOutput concrete /= expected
+                    then Left ("PC " ++ show pc ++ ": compiled output differs from source evaluation.")
+                    else
+                        Right
+                            ExportTestCase
+                                { testId = 0
+                                , inputAssignments = assignments
+                                , inputOccurrences = occurrences
+                                , expectedOutput = expected
+                                , expectedBranches = branches
+                                , pathConditionText = F.toList (renderSym (foldr SAnd (SCon 1) cs))
+                                , notes = "Validated completed path at PC " ++ show pc
+                                }
+    mkTestCase _ = Left "A non-SAT path was passed to the test builder."
 
 leaves :: T.Tree a -> [a]
 leaves (T.Node x []) = [x]
 leaves (T.Node _ children) = concatMap leaves children
 
+-- A cut is never a completed program, even when its accumulated condition is SAT.
 isSatisfiableSolvedState :: SolvedState -> Bool
-isSatisfiableSolvedState (SolvedState _ (S.Satisfiable _ _)) = True
+isSatisfiableSolvedState (SolvedState node (Just (S.Satisfiable _ _))) = stopReason node == Completed
 isSatisfiableSolvedState _ = False
 
 modelAssignments :: S.SMTResult -> M.Map String Word32
 modelAssignments result@(S.Satisfiable _ _) =
     M.mapMaybe parseModelWord (M.mapKeys F.toList (S.getModelDictionary result))
-modelAssignments _ =
-    M.empty
+modelAssignments _ = M.empty
 
-parseModelWord :: Show a => a -> Maybe Word32
-parseModelWord value =
-    readMaybe (takeWhile Char.isDigit (show value))
+parseModelWord :: (Show a) => a -> Maybe Word32
+parseModelWord value = readMaybe (takeWhile Char.isDigit (show value))
 
--- The solver model is keyed by val_N. This maps those values back to source
--- input names in declaration order, falling back to val_N for defensive output.
-concreteInputs :: [String] -> Int -> M.Map String Word32 -> [(String, Word32)]
-concreteInputs inputNames inputCount model =
-    [ (inputName i, M.findWithDefault 0 (F.toList (valName i)) model)
-        | i <- [0 .. inputCount - 1]
-    ]
-  where
-    inputName i =
-        case drop i inputNames of
-            name : _ -> name
-            [] -> F.toList (valName i)
-
-evalPyProgram :: PyProgram -> [Word32] -> Either String [String]
-evalPyProgram (PyProgram stmts) inputs = do
-    (_, _, outputs) <- evalStmts M.empty (map toInteger inputs) [] stmts
-    return outputs
-
--- Small interpreter for the parsed Python-like subset. It exists only to
--- compute replay expectations for original.py, keeping export independent from
--- the interactive Concrete runner.
-evalStmts ::
-    M.Map String Integer ->
-    [Integer] ->
-    [String] ->
-    [PyStmt] ->
-    Either String (M.Map String Integer, [Integer], [String])
-evalStmts env inputs outputs [] =
-    Right (env, inputs, outputs)
-evalStmts env inputs outputs (stmt : stmts) = do
-    (env', inputs', outputs') <- evalStmt env inputs outputs stmt
-    evalStmts env' inputs' outputs' stmts
-
-evalStmt ::
-    M.Map String Integer ->
-    [Integer] ->
-    [String] ->
-    PyStmt ->
-    Either String (M.Map String Integer, [Integer], [String])
-evalStmt env (value : inputs) outputs (PyInput name) =
-    Right (M.insert name value env, inputs, outputs)
-evalStmt _ [] _ (PyInput name) =
-    Left ("Missing input value for " ++ name ++ ".")
-evalStmt env inputs outputs (PyAssign name expr) = do
-    value <- evalExpr env expr
-    Right (M.insert name value env, inputs, outputs)
-evalStmt env inputs outputs (PyPrint expr) = do
-    value <- evalExpr env expr
-    Right (env, inputs, outputs ++ [show value])
-evalStmt env inputs outputs (PyIf cond thenStmts elseStmts) = do
-    value <- evalExpr env cond
-    if value /= 0
-        then evalStmts env inputs outputs thenStmts
-        else evalStmts env inputs outputs (maybe [] id elseStmts)
-
-evalExpr :: M.Map String Integer -> PyExp -> Either String Integer
-evalExpr _ (PyVal value) =
-    Right (toInteger value)
-evalExpr env (PyVar name) =
-    case M.lookup name env of
-        Just value -> Right value
-        Nothing -> Left ("Variable not defined: " ++ name ++ ".")
-evalExpr env (PyAdd l r) =
-    (+) <$> evalExpr env l <*> evalExpr env r
-evalExpr env (PyAnd l r) =
-    boolToInteger <$> ((&&) <$> evalBool env l <*> evalBool env r)
-evalExpr env (PyOr l r) =
-    boolToInteger <$> ((||) <$> evalBool env l <*> evalBool env r)
-evalExpr env (PyNot expr) =
-    boolToInteger . not <$> evalBool env expr
-evalExpr env (PyLt l r) =
-    boolToInteger <$> ((<) <$> evalExpr env l <*> evalExpr env r)
-evalExpr env (PyGt l r) =
-    boolToInteger <$> ((>) <$> evalExpr env l <*> evalExpr env r)
-evalExpr env (PyEq l r) =
-    boolToInteger <$> ((==) <$> evalExpr env l <*> evalExpr env r)
-
-evalBool :: M.Map String Integer -> PyExp -> Either String Bool
-evalBool env expr =
-    (/= 0) <$> evalExpr env expr
-
-boolToInteger :: Bool -> Integer
-boolToInteger True = 1
-boolToInteger False = 0
+-- Report structural terminal states separately from solver feasibility. A cut
+-- with an UNSAT condition must not be counted as a feasible uncovered path.
+renderAnalysisJson :: AnalysisConfig -> T.Tree SolvedState -> [String] -> String
+renderAnalysisJson config tree rejected =
+    let terminals = leaves tree
+        resultName Nothing = "not_queried"
+        resultName (Just (S.Satisfiable _ _)) = "sat"
+        resultName (Just (S.Unsatisfiable _ _)) = "unsat"
+        resultName _ = "unknown_or_error"
+        renderTerminal (SolvedState node result) =
+            let (pc, _, _, _, _, _) = traceState node
+             in "{\"pc\":"
+                    ++ show pc
+                    ++ ",\"status\":"
+                    ++ jsonString (show (stopReason node))
+                    ++ ",\"solver\":"
+                    ++ jsonString (resultName result)
+                    ++ "}"
+     in "{\n  \"loop_k\": "
+            ++ show (loopK config)
+            ++ ",\n  \"max_depth\": "
+            ++ show (maxDepth config)
+            ++ ",\n  \"states\": "
+            ++ show (length (T.flatten tree))
+            ++ ",\n  \"solver_queries\": "
+            ++ show (length terminals)
+            ++ ",\n  \"terminal_paths\": ["
+            ++ intercalate "," (map renderTerminal terminals)
+            ++ "]"
+            ++ ",\n  \"validation_rejections\": "
+            ++ renderJsonStringList rejected
+            ++ "\n}\n"
 
 renderStackProgram :: [Instr] -> String
 renderStackProgram instrs =
@@ -295,6 +282,12 @@ renderJsonTestCase testCase =
         ++ "      \"input_values\": "
         ++ renderJsonWordList (map snd (inputAssignments testCase))
         ++ ",\n"
+        ++ "      \"input_events\": "
+        ++ renderInputEvents (inputOccurrences testCase)
+        ++ ",\n"
+        ++ "      \"expected_branches\": "
+        ++ renderJsonBranches (expectedBranches testCase)
+        ++ ",\n"
         ++ "      \"expected_output\": "
         ++ renderJsonStringList (expectedOutput testCase)
         ++ ",\n"
@@ -305,6 +298,33 @@ renderJsonTestCase testCase =
         ++ jsonString (notes testCase)
         ++ "\n"
         ++ "    }"
+
+-- Every occurrence carries both its solver identity and its source-level name.
+renderInputEvents :: [(ReadEvent, String, Word32)] -> String
+renderInputEvents events = "[" ++ intercalate "," (map one events) ++ "]"
+  where
+    one (event, name, value) =
+        "{\"index\":"
+            ++ show (readIndex event)
+            ++ ",\"pc\":"
+            ++ show (readPc event)
+            ++ ",\"symbol\":"
+            ++ jsonString ("val_" ++ show (readIndex event))
+            ++ ",\"name\":"
+            ++ jsonString name
+            ++ ",\"value\":"
+            ++ show value
+            ++ "}"
+
+renderJsonBranches :: [BranchEvent] -> String
+renderJsonBranches events = "[" ++ intercalate "," (map one events) ++ "]"
+  where
+    one event =
+        "{\"pc\":"
+            ++ show (branchPc event)
+            ++ ",\"taken\":"
+            ++ (if branchTaken event then "true" else "false")
+            ++ "}"
 
 renderJsonObject :: [(String, Word32)] -> String
 renderJsonObject fields =
@@ -334,73 +354,104 @@ escapeJson '\r' = "\\r"
 escapeJson '\t' = "\\t"
 escapeJson c = [c]
 
-replayScript :: String
-replayScript =
+-- Each test runs in a separate Python process. A source-level step budget and
+-- a parent timeout prevent a bad model or a changed program from hanging replay.
+replayScript :: FilePath -> FilePath -> String
+replayScript origFile jsonFile =
     unlines
         [ "#!/usr/bin/env python3"
-        , "\"\"\"Replay generated symbolic-execution test cases.\"\"\""
+        , "\"\"\"Replay generated tests in isolated processes with a time and step budget.\"\"\""
         , ""
+        , "import argparse"
         , "import builtins"
         , "import contextlib"
         , "import io"
         , "import json"
         , "import runpy"
+        , "import subprocess"
+        , "import sys"
         , "from pathlib import Path"
         , ""
-        , ""
         , "ROOT = Path(__file__).resolve().parent"
-        , "PROGRAM = ROOT / \"original.py\""
-        , "TEST_CASES = ROOT / \"test_cases.json\""
+        , "PROGRAM = ROOT / " ++ jsonString origFile
+        , "TEST_CASES = ROOT / " ++ jsonString jsonFile
         , ""
         , ""
-        , "def normalize(lines):"
-        , "    \"\"\"Compare printed output after trimming trailing whitespace."
-        , ""
-        , "    This keeps comparisons exact for line order and values, while avoiding"
-        , "    failures caused only by trailing spaces in print output."
-        , "    \"\"\""
-        , "    return [str(line).rstrip() for line in lines]"
-        , ""
-        , ""
-        , "def run_program(input_values):"
+        , "def run_program(input_values, step_budget):"
+        , "    \"\"\"Preserve the prototype's integer-valued input() convention.\"\"\""
         , "    values = iter(input_values)"
         , "    original_input = builtins.input"
+        , "    previous_trace = sys.gettrace()"
+        , "    steps = 0"
         , ""
         , "    def generated_input(prompt=\"\"):"
         , "        try:"
         , "            return int(next(values))"
         , "        except StopIteration as exc:"
-        , "            raise RuntimeError(\"Program requested more input values than the test provides\") from exc"
+        , "            raise RuntimeError(\"Program requested more inputs than the test provides\") from exc"
+        , ""
+        , "    def trace_source(frame, event, arg):"
+        , "        nonlocal steps"
+        , "        if event == \"line\" and frame.f_code.co_filename == str(PROGRAM):"
+        , "            steps += 1"
+        , "            if steps > step_budget:"
+        , "                raise RuntimeError(\"Source replay exhausted its step budget\")"
+        , "        return trace_source"
         , ""
         , "    stdout = io.StringIO()"
         , "    builtins.input = generated_input"
         , "    try:"
+        , "        sys.settrace(trace_source)"
         , "        with contextlib.redirect_stdout(stdout):"
         , "            runpy.run_path(str(PROGRAM), run_name=\"__main__\")"
         , "    finally:"
+        , "        sys.settrace(previous_trace)"
         , "        builtins.input = original_input"
-        , ""
+        , "    if list(values):"
+        , "        raise RuntimeError(\"Program did not consume all generated inputs\")"
         , "    return stdout.getvalue().splitlines()"
         , ""
         , ""
         , "def main():"
-        , "    data = json.loads(TEST_CASES.read_text(encoding=\"utf-8\"))"
-        , "    tests = data.get(\"test_cases\", [])"
+        , "    parser = argparse.ArgumentParser(description=__doc__)"
+        , "    parser.add_argument(\"--timeout\", type=float, default=5.0)"
+        , "    parser.add_argument(\"--step-budget\", type=int, default=100000)"
+        , "    parser.add_argument(\"--worker\", action=\"store_true\", help=argparse.SUPPRESS)"
+        , "    args = parser.parse_args()"
+        , "    if args.timeout <= 0 or args.step_budget <= 0:"
+        , "        parser.error(\"Timeout and step budget must be positive\")"
+        , "    if args.worker:"
+        , "        values = json.load(sys.stdin)"
+        , "        print(json.dumps(run_program(values, args.step_budget)))"
+        , "        return"
+        , ""
+        , "    tests = json.loads(TEST_CASES.read_text(encoding=\"utf-8\")).get(\"test_cases\", [])"
+        , "    if not tests:"
+        , "        print(\"No validated completed test cases are available.\")"
+        , "        raise SystemExit(2)"
         , "    passed = 0"
-        , ""
         , "    for test in tests:"
-        , "        actual = run_program(test.get(\"input_values\", []))"
-        , "        expected = test.get(\"expected_output\", [])"
-        , "        ok = normalize(actual) == normalize(expected)"
-        , "        status = \"PASS\" if ok else \"FAIL\""
-        , "        print(f\"[{status}] Test Case {test.get('id')}\")"
-        , "        if not ok:"
-        , "            print(f\"  inputs:   {test.get('inputs', {})}\")"
-        , "            print(f\"  expected: {expected}\")"
-        , "            print(f\"  actual:   {actual}\")"
-        , "            print(f\"  path:     {test.get('path_condition', '')}\")"
-        , "        passed += 1 if ok else 0"
-        , ""
+        , "        try:"
+        , "            process = subprocess.run("
+        , "                [sys.executable, str(Path(__file__).resolve()), \"--worker\","
+        , "                 \"--step-budget\", str(args.step_budget)],"
+        , "                input=json.dumps(test.get(\"input_values\", [])),"
+        , "                text=True, capture_output=True, timeout=args.timeout, check=True,"
+        , "            )"
+        , "            actual = json.loads(process.stdout)"
+        , "            expected = test.get(\"expected_output\", [])"
+        , "            # Preserve exact line order and values; ignore only trailing spaces."
+        , "            ok = [str(x).rstrip() for x in actual] == [str(x).rstrip() for x in expected]"
+        , "            print(f\"[{'PASS' if ok else 'FAIL'}] Test Case {test.get('id')}\")"
+        , "            if not ok:"
+        , "                print(f\"  inputs: {test.get('input_values', [])}\")"
+        , "                print(f\"  expected: {expected}; actual: {actual}\")"
+        , "            passed += int(ok)"
+        , "        except subprocess.TimeoutExpired:"
+        , "            print(f\"[FAIL] Test Case {test.get('id')}: replay timeout\")"
+        , "        except (subprocess.CalledProcessError, ValueError) as exc:"
+        , "            detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) else str(exc)"
+        , "            print(f\"[FAIL] Test Case {test.get('id')}: {detail}\")"
         , "    print(f\"\\nSummary: {passed}/{len(tests)} tests passed\")"
         , "    raise SystemExit(0 if passed == len(tests) else 1)"
         , ""
@@ -409,8 +460,8 @@ replayScript =
         , "    main()"
         ]
 
-renderReadme :: FilePath -> String -> String
-renderReadme inputPath programName =
+renderReadme :: FilePath -> String -> FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> String
+renderReadme inputPath programName origFile stackFile txtFile jsonFile runnerFile readmeFile =
     unlines
         [ "# Generated tests for " ++ programName
         , ""
@@ -418,19 +469,19 @@ renderReadme inputPath programName =
         , ""
         , "## Files"
         , ""
-        , "- `original.py`: exact Python-like source text analyzed by the tool."
-        , "- `stack_program.txt`: compiled stack-language program with instruction addresses."
-        , "- `test_cases.txt`: human-readable generated test cases."
-        , "- `test_cases.json`: structured data consumed by `run_tests.py`."
-        , "- `run_tests.py`: Python replay script that executes `original.py` for every generated test case."
-        , "- `README.md`: this file."
+        , "- `" ++ origFile ++ "`: exact Python-like source text analyzed by the tool."
+        , "- `" ++ stackFile ++ "`: compiled stack-language program with instruction addresses."
+        , "- `" ++ txtFile ++ "`: human-readable generated test cases."
+        , "- `" ++ jsonFile ++ "`: structured data consumed by `" ++ runnerFile ++ "`."
+        , "- `" ++ runnerFile ++ "`: Python replay script that executes `" ++ origFile ++ "` for every generated test case."
+        , "- `" ++ readmeFile ++ "`: this file."
         , ""
         , "## Running the replay"
         , ""
         , "From this directory, run:"
         , ""
         , "```sh"
-        , "python3 run_tests.py"
+        , "python3 " ++ runnerFile
         , "```"
         , ""
         , "The replay script patches `input()` so the Python-like program receives integer input values, matching the analyzed language subset."
@@ -438,7 +489,7 @@ renderReadme inputPath programName =
         , ""
         , "## Test case format"
         , ""
-        , "Each test case records input assignments, expected printed output, the rendered symbolic path condition, and a note identifying the solved symbolic leaf that produced it."
+        , "Each test case records input assignments, expected printed output, the rendered symbolic path condition, and a note identifying the validated completed symbolic path that produced it."
         ]
 
 padLeft :: Int -> String -> String

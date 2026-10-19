@@ -1,0 +1,24 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {"x": 0},
+      "input_values": [0],
+      "input_events": [{"index":0,"pc":0,"symbol":"val_0","name":"x","value":0}],
+      "expected_branches": [{"pc":10,"taken":false},{"pc":15,"taken":true}],
+      "expected_output": ["0"],
+      "path_condition": "~(~(0 = val_0)) and 1",
+      "notes": "Validated completed path at PC 19"
+    },
+    {
+      "id": 2,
+      "inputs": {"x": 4294967295},
+      "input_values": [4294967295],
+      "input_events": [{"index":0,"pc":0,"symbol":"val_0","name":"x","value":4294967295}],
+      "expected_branches": [{"pc":10,"taken":true}],
+      "expected_output": ["4294967295"],
+      "path_condition": "~(0 = val_0) and 1",
+      "notes": "Validated completed path at PC 19"
+    }
+  ]
+}

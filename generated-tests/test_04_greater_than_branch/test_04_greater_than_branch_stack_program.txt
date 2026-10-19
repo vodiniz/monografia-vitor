@@ -1,0 +1,21 @@
+Generated stack-language program
+
+   0: Read
+   1: Push 0
+   2: Store
+   3: Push 0
+   4: Load
+   5: Push 10
+   6: Lt
+   7: Push 15
+   8: Swap
+   9: JmpIf
+  10: Push 0
+  11: Print
+  12: Push 18
+  13: Push 1
+  14: JmpIf
+  15: Push 0
+  16: Load
+  17: Print
+  18: Done

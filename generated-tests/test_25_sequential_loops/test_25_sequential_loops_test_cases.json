@@ -1,0 +1,14 @@
+{
+  "test_cases": [
+    {
+      "id": 1,
+      "inputs": {},
+      "input_values": [],
+      "input_events": [],
+      "expected_branches": [{"pc":10,"taken":false},{"pc":19,"taken":true},{"pc":10,"taken":false},{"pc":19,"taken":true},{"pc":10,"taken":true},{"pc":30,"taken":false},{"pc":39,"taken":true},{"pc":30,"taken":false},{"pc":39,"taken":true},{"pc":30,"taken":true}],
+      "expected_output": ["4"],
+      "path_condition": "1",
+      "notes": "Validated completed path at PC 46"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+=== Test Case 1 ===
+Inputs:
+  x = 4026531812
+  y = 537066544
+
+Expected output:
+  20
+
+
+Path condition:
+  ~((val_1 + val_0) < 20) and 1
+
+Notes:
+  Validated completed path at PC 28
